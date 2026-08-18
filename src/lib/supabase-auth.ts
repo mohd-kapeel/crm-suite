@@ -1,133 +1,251 @@
-export type SupabaseUser = {
-  id: string;
-  email?: string;
-  user_metadata?: Record<string, unknown>;
-};
+import {
+  createClient,
+  type Session,
+  type User,
+} from "@supabase/supabase-js";
 
-type SupabaseSession = {
-  access_token: string;
-  refresh_token: string;
-  expires_at?: number;
-  expires_in?: number;
-  token_type?: string;
-  user: SupabaseUser;
-};
+export type SupabaseUser = User;
 
-const url = import.meta.env.VITE_SUPABASE_URL?.trim().replace(/\/$/, "");
-const key = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY?.trim();
-const STORAGE_KEY = "crm-suite-supabase-session";
+type SupabaseSession = Session;
 
-export const supabaseConfigured = Boolean(url && key);
+/* ---------------------------------------
+   Supabase Environment Configuration
+---------------------------------------- */
 
-function requireConfig() {
-  if (!url || !key) {
-    throw new Error("Supabase is not configured. Add VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY to .env.local.");
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
+  ?.trim()
+  .replace(/\/$/, "");
+
+const supabasePublishableKey =
+  import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY?.trim();
+
+  console.log("=== SUPABASE ENV CHECK ===");
+console.log("Supabase URL:", supabaseUrl);
+console.log(
+  "Supabase Publishable Key Loaded:",
+  Boolean(supabasePublishableKey)
+);
+console.log("==========================");
+
+export const supabaseConfigured = Boolean(
+  supabaseUrl && supabasePublishableKey
+);
+
+/* ---------------------------------------
+   Supabase Client
+---------------------------------------- */
+
+export const supabase = supabaseConfigured
+  ? createClient(
+      supabaseUrl!,
+      supabasePublishableKey!,
+      {
+        auth: {
+          persistSession: true,
+          autoRefreshToken: true,
+          detectSessionInUrl: true,
+        },
+      }
+    )
+  : null;
+
+/* ---------------------------------------
+   Configuration Validation
+---------------------------------------- */
+
+function requireSupabase() {
+  if (!supabase) {
+    throw new Error(
+      "Supabase is not configured. Please check VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY."
+    );
   }
+
+  return supabase;
 }
 
-function saveSession(session: SupabaseSession | null) {
-  if (session) localStorage.setItem(STORAGE_KEY, JSON.stringify(session));
-  else localStorage.removeItem(STORAGE_KEY);
-  window.dispatchEvent(new Event("crm-auth-change"));
-}
+/* ---------------------------------------
+   Sign Up
+---------------------------------------- */
 
-function readSession(): SupabaseSession | null {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : null;
-  } catch {
-    localStorage.removeItem(STORAGE_KEY);
-    return null;
+export async function signUp(
+  name: string,
+  email: string,
+  password: string
+) {
+  const client = requireSupabase();
+
+  const cleanName = name.trim();
+  const cleanEmail = email.trim().toLowerCase();
+
+  if (!cleanName) {
+    throw new Error("Name is required.");
   }
-}
 
-async function request(path: string, options: RequestInit = {}) {
-  requireConfig();
-  const response = await fetch(`${url}/auth/v1/${path}`, {
-    ...options,
-    headers: {
-      apikey: key!,
-      "Content-Type": "application/json",
-      ...(options.headers || {}),
+  if (!cleanEmail) {
+    throw new Error("Email is required.");
+  }
+
+  if (!password) {
+    throw new Error("Password is required.");
+  }
+
+  const { data, error } = await client.auth.signUp({
+    email: cleanEmail,
+    password,
+    options: {
+      data: {
+        full_name: cleanName,
+      },
     },
   });
 
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(body?.msg || body?.message || body?.error_description || body?.error || "Authentication request failed.");
+  if (error) {
+    throw new Error(error.message);
   }
-  return body;
+
+  return data;
 }
 
-export async function signUp(name: string, email: string, password: string) {
-  const body = await request("signup", {
-    method: "POST",
-    body: JSON.stringify({
-      email: email.trim().toLowerCase(),
+/* ---------------------------------------
+   Sign In
+---------------------------------------- */
+
+export async function signIn(
+  email: string,
+  password: string
+) {
+  const client = requireSupabase();
+
+  const cleanEmail = email.trim().toLowerCase();
+
+  if (!cleanEmail) {
+    throw new Error("Email is required.");
+  }
+
+  if (!password) {
+    throw new Error("Password is required.");
+  }
+
+  const { data, error } =
+    await client.auth.signInWithPassword({
+      email: cleanEmail,
       password,
-      data: { full_name: name.trim() },
-    }),
-  });
-  if (body?.access_token && body?.refresh_token && body?.user) saveSession(body);
-  return body as SupabaseSession & { confirmation_sent_at?: string };
+    });
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return data;
 }
 
-export async function signIn(email: string, password: string) {
-  const body = await request("token?grant_type=password", {
-    method: "POST",
-    body: JSON.stringify({
-      email: email.trim().toLowerCase(),
-      password,
-    }),
-  });
-  saveSession(body);
-  return body as SupabaseSession;
-}
+/* ---------------------------------------
+   Sign Out
+---------------------------------------- */
 
 export async function signOut() {
-  const session = readSession();
-  try {
-    if (session?.access_token) {
-      await request("logout", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${session.access_token}` },
-      });
-    }
-  } finally {
-    saveSession(null);
+  const client = requireSupabase();
+
+  const { error } = await client.auth.signOut();
+
+  if (error) {
+    throw new Error(error.message);
   }
 }
 
-export function getSession() {
-  return readSession();
-}
+/* ---------------------------------------
+   Get Current Session
+---------------------------------------- */
 
-export function getUser() {
-  return readSession()?.user ?? null;
-}
-
-export async function refreshSession() {
-  const session = readSession();
-  if (!session?.refresh_token) return null;
-  try {
-    const body = await request("token?grant_type=refresh_token", {
-      method: "POST",
-      body: JSON.stringify({ refresh_token: session.refresh_token }),
-    });
-    saveSession(body);
-    return body as SupabaseSession;
-  } catch {
-    saveSession(null);
+export async function getSession(): Promise<Session | null> {
+  if (!supabase) {
     return null;
   }
+
+  const {
+    data,
+    error,
+  } = await supabase.auth.getSession();
+
+  if (error) {
+    console.error(
+      "Failed to get Supabase session:",
+      error
+    );
+
+    return null;
+  }
+
+  return data.session;
 }
 
-export function onAuthStateChange(callback: (session: SupabaseSession | null) => void) {
-  const handler = () => callback(readSession());
-  window.addEventListener("crm-auth-change", handler);
-  window.addEventListener("storage", handler);
+/* ---------------------------------------
+   Get Current User
+---------------------------------------- */
+
+export async function getUser(): Promise<User | null> {
+  if (!supabase) {
+    return null;
+  }
+
+  const {
+    data,
+    error,
+  } = await supabase.auth.getUser();
+
+  if (error) {
+    console.error(
+      "Failed to get Supabase user:",
+      error
+    );
+
+    return null;
+  }
+
+  return data.user;
+}
+
+/* ---------------------------------------
+   Refresh Session
+---------------------------------------- */
+
+export async function refreshSession() {
+  const client = requireSupabase();
+
+  const {
+    data,
+    error,
+  } = await client.auth.refreshSession();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return data;
+}
+
+/* ---------------------------------------
+   Auth State Listener
+---------------------------------------- */
+
+export function onAuthStateChange(
+  callback: (
+    session: SupabaseSession | null
+  ) => void
+) {
+  if (!supabase) {
+    return () => {};
+  }
+
+  const {
+    data: { subscription },
+  } = supabase.auth.onAuthStateChange(
+    (_event, session) => {
+      callback(session);
+    }
+  );
+
   return () => {
-    window.removeEventListener("crm-auth-change", handler);
-    window.removeEventListener("storage", handler);
+    subscription.unsubscribe();
   };
 }
