@@ -26,9 +26,10 @@ export default function Signup() {
     setLoading(true);
     try {
       const result = await signUp(name, email, password);
-      if (result?.access_token) {
-        navigate("/");
-      } else {
+
+if (result?.session?.access_token) {
+  navigate("/");
+} else {
         setSuccess("Account created. Please verify your email, then sign in to enter CRM Suite.");
       }
     } catch (err) {
